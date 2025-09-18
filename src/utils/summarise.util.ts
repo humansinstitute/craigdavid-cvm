@@ -31,13 +31,15 @@ export interface SummaryResult {
  */
 export async function createAndPublishWeeklyRap(
   weeklyContent: string,
+  subjectPubkey: string,
   openRouterApiToken: string,
   serverPrivateKey: string,
   relayPool: SimpleRelayPool,
   powDifficulty: number = 0
 ): Promise<SummaryResult> {
   console.log('🎵 Creating weekly Craig David rap...');
-  console.log(`   Input: ${weeklyContent}`);
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
+  console.log(`   Input preview: ${weeklyContent.substring(0, 100)}...`);
 
   try {
     // Step 1: Generate weekly rap using OpenRouter
@@ -45,7 +47,8 @@ export async function createAndPublishWeeklyRap(
     
     // Step 2: Publish to Nostr as Kind 1 event
     const publicationResult = await publishWeeklyRapToNostr(
-      weeklyRap, 
+      weeklyRap,
+      subjectPubkey,
       serverPrivateKey, 
       relayPool,
       powDifficulty
@@ -79,13 +82,15 @@ export async function createAndPublishWeeklyRap(
  */
 export async function createAndPublishSummary(
   dayInput: string,
+  subjectPubkey: string,
   openRouterApiToken: string,
   serverPrivateKey: string,
   relayPool: SimpleRelayPool,
   powDifficulty: number = 0
 ): Promise<SummaryResult> {
   console.log('📝 Creating humorous day summary...');
-  console.log(`   Input: ${dayInput}`);
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
+  console.log(`   Input preview: ${dayInput.substring(0, 100)}...`);
 
   try {
     // Step 1: Generate humorous summary using OpenRouter
@@ -93,7 +98,8 @@ export async function createAndPublishSummary(
     
     // Step 2: Publish to Nostr as Kind 1 event
     const publicationResult = await publishSummaryToNostr(
-      summary, 
+      summary,
+      subjectPubkey,
       serverPrivateKey, 
       relayPool,
       powDifficulty,
@@ -116,6 +122,59 @@ export async function createAndPublishSummary(
       error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
+}
+
+/**
+ * Creates and publishes a roast using OpenRouter API
+ * @param socialPosts Input social media posts to roast
+ * @param subjectPubkey Hex pubkey of person being roasted
+ * @param openRouterApiToken OpenRouter API token
+ * @param roastPrivateKey Private key for roast account
+ * @param relayPool Relay pool for publishing events
+ * @param powDifficulty PoW difficulty for mining
+ * @returns Promise with roast and publication results
+ */
+export async function createAndPublishRoast(
+  socialPosts: string,
+  subjectPubkey: string,
+  openRouterApiToken: string,
+  roastPrivateKey: string,
+  relayPool: SimpleRelayPool,
+  powDifficulty: number = 0
+): Promise<SummaryResult> {
+  console.log('🔥 Creating witty roast...');
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
+  console.log(`   Input preview: ${socialPosts.substring(0, 100)}...`);
+
+  try {
+    // Step 1: Generate roast using OpenRouter
+    const roast = await generateRoast(socialPosts, openRouterApiToken);
+    
+    // Step 2: Publish to Nostr as Kind 1 event
+    const publicationResult = await publishRoastToNostr(
+      roast,
+      subjectPubkey,
+      roastPrivateKey, 
+      relayPool,
+      powDifficulty
+    );
+
+    return {
+      summary: roast,
+      nostrEventId: publicationResult.eventId,
+      published: publicationResult.success,
+      error: publicationResult.error
+    };
+  } catch (error) {
+    console.error('❌ Error in createAndPublishRoast:', error);
+    
+    return {
+      summary: '',
+      nostrEventId: '',
+      published: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    };
+  };
 }
 
 /**
@@ -255,12 +314,14 @@ async function callOpenRouterAgentWithCustomPrompt(
  */
 async function publishSummaryToNostr(
   summary: string,
+  subjectPubkey: string,
   privateKeyHex: string,
   relayPool: SimpleRelayPool,
   powDifficulty: number = 0,
   dayInput?: string
 ): Promise<{ success: boolean; eventId: string; error?: string }> {
   console.log('📡 Publishing summary to Nostr...');
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
   
   try {
     // Create signer from private key
@@ -270,26 +331,12 @@ async function publishSummaryToNostr(
     console.log(`   Publishing from: ${pubkey} 🎵`);
     console.log(`   Summary length: ${summary.length} characters`);
 
-    // Extract metadata from dayInput if available
-    let targetPubkey: string | undefined;
+    // Use the passed subjectPubkey directly
+    const targetPubkey = subjectPubkey;
     let dateStr: string | undefined;
     
     if (dayInput) {
-      // Extract npub from the input (format: "...for npub12guhgpnn700zd... (day 250913):...")
-      const npubMatch = dayInput.match(/npub([a-z0-9]+)/i);
-      if (npubMatch) {
-        try {
-          // Convert npub to hex pubkey
-          const { nip19 } = await import('nostr-tools');
-          const decoded = nip19.decode(npubMatch[0]);
-          if (decoded.type === 'npub') {
-            targetPubkey = decoded.data as string;
-            console.log(`   Target user pubkey: ${targetPubkey}`);
-          }
-        } catch (e) {
-          console.warn(`   Could not decode npub: ${e}`);
-        }
-      }
+      // No longer extract npub - we get it directly as subjectPubkey parameter
       
       // Extract date from the input (format: "...(day 250913):..." or "...(day 2024-09-18):...")
       const dateMatch = dayInput.match(/\(day ([0-9-]+)\)/);
@@ -482,11 +529,13 @@ Keep it fun, family-friendly, and true to Craig David's musical style! Start wit
  */
 async function publishWeeklyRapToNostr(
   weeklyRap: string,
+  subjectPubkey: string,
   privateKeyHex: string,
   relayPool: SimpleRelayPool,
   powDifficulty: number = 0
 ): Promise<{ success: boolean; eventId: string; error?: string }> {
   console.log('📡 Publishing weekly rap to Nostr...');
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
   
   try {
     // Create signer from private key
@@ -499,6 +548,7 @@ async function publishWeeklyRapToNostr(
     // Build tags array for weekly rap
     const tags: Array<[string, ...string[]]> = [
       ['client', 'Craig David'],
+      ['p', subjectPubkey],  // Person this rap is about
       ['t', 'weekly-song'],
       ['t', 'humor'],
       ['t', 'craigdavid']
@@ -564,6 +614,134 @@ async function publishWeeklyRapToNostr(
     }
   } catch (error) {
     console.error('❌ Error publishing weekly rap to Nostr:', error);
+    return {
+      success: false,
+      eventId: '',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
+/**
+ * Generates a roast using OpenRouter API with custom system prompt
+ * @param socialPosts The social media posts to roast
+ * @param apiToken OpenRouter API token
+ * @returns Promise with generated roast
+ */
+async function generateRoast(socialPosts: string, apiToken: string): Promise<string> {
+  const systemPrompt = `You are a witty comedy roasting assistant inspired by the observational and roasting styles of stand-up comedians. Your job is to provide humorous, clever commentary on social media posts in a roasting format.
+
+Core Guidelines:
+- Focus on obvious contradictions, humble brags, or amusing patterns in the posts
+- Use observational humor rather than personal attacks
+- Keep roasts clever and witty, not cruel or genuinely hurtful
+- Avoid comments about physical appearance, serious personal struggles, or protected characteristics
+- Channel a dry, sarcastic delivery style with unexpected punchlines
+- Use callbacks and escalating observations when you spot patterns
+
+Roasting Techniques:
+- Point out ironic contradictions between posts
+- Call out obvious fishing for compliments or attention
+- Mock overly dramatic reactions to minor inconveniences
+- Highlight when someone's trying too hard to appear sophisticated/cool
+- Notice when posts reveal more than the person intended
+
+Boundaries:
+- Never roast posts about genuine hardship, loss, or mental health struggles
+- Keep it playful, not vicious
+- Be funny and friendly
+
+Format: Provide 2-3 short roasting observations, each 1-2 sentences maximum.`;
+  
+  return await callOpenRouterAgentWithCustomPrompt(
+    socialPosts,
+    systemPrompt,
+    apiToken,
+    'x-ai/grok-4'
+  );
+}
+
+/**
+ * Publishes roast to Nostr as Kind 1 event
+ * @param roast The generated roast content
+ * @param subjectPubkey Hex pubkey of person being roasted
+ * @param privateKeyHex Roast account's private key
+ * @param relayPool Relay pool for publishing
+ * @param powDifficulty PoW difficulty
+ * @returns Promise with publication result
+ */
+async function publishRoastToNostr(
+  roast: string,
+  subjectPubkey: string,
+  privateKeyHex: string,
+  relayPool: SimpleRelayPool,
+  powDifficulty: number = 0
+): Promise<{ success: boolean; eventId: string; error?: string }> {
+  console.log('📡 Publishing roast to Nostr...');
+  console.log(`   Subject pubkey: ${subjectPubkey}`);
+  
+  try {
+    // Create signer from private key
+    const signer = new PrivateKeySigner(privateKeyHex);
+    const pubkey = await signer.getPublicKey();
+    
+    console.log(`   Publishing from: ${pubkey} 🔥`);
+    console.log(`   Roast length: ${roast.length} characters`);
+
+    // Build tags array for roast
+    const tags: Array<[string, ...string[]]> = [
+      ['client', 'Roast Bot'],
+      ['p', subjectPubkey],  // Person being roasted
+      ['t', 'roast'],
+      ['t', 'comedy'],
+      ['t', 'humor']
+    ];
+
+    // Create Kind 1 event (text note)
+    const eventTemplate = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: tags,
+      content: `🔥 Roast Time!\n\n${roast}\n\n#roast #comedy #humor`,
+      pubkey: pubkey
+    };
+
+    console.log(`   Event template created for roast`);
+    console.log(`   Tags: ${JSON.stringify(tags)}`);
+
+    // Sign the event first, then mine if needed
+    const signedEvent = await signer.signEvent(eventTemplate);
+    
+    // Mine event with PoW if difficulty > 0
+    let finalEvent;
+    if (powDifficulty > 0) {
+      console.log(`⛏️  Mining event with difficulty ${powDifficulty}...`);
+      finalEvent = await mineEventPow(signedEvent, powDifficulty);
+      console.log(`✅ Event mined successfully`);
+    } else {
+      // Use the signed event as-is
+      finalEvent = signedEvent;
+    }
+
+    // Log the final event details
+    console.log(`   Final event ID: ${finalEvent.id}`);
+    console.log(`   Event content preview: ${finalEvent.content.substring(0, 100)}...`);
+
+    // Publish to all relays
+    console.log('📡 Publishing to Nostr relays...');
+    await relayPool.publish(finalEvent);
+    
+    console.log(`✅ Roast published successfully!`);
+    console.log(`   Event ID: ${finalEvent.id}`);
+    console.log(`   Published to ${relayPool['relays']?.length || 'unknown'} relays`);
+
+    return {
+      success: true,
+      eventId: finalEvent.id
+    };
+
+  } catch (error) {
+    console.error('❌ Error publishing roast to Nostr:', error);
     return {
       success: false,
       eventId: '',

@@ -23,7 +23,7 @@ import { SimpleRelayPool } from "@contextvm/sdk";
 import { generateSecretKey, getPublicKey } from "nostr-tools";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { callOpenRouterAgent } from "./utils/callAgent.util.js";
-import { createAndPublishSummary } from "./utils/summarise.util.js";
+import { createAndPublishSummary, createAndPublishWeeklyRap, createAndPublishRoast } from "./utils/summarise.util.js";
 
 // ==================== Configuration Section ====================
 /**
@@ -139,6 +139,33 @@ if (!CRAIG_DAVID_KEY) {
   const craigDavidSecretKey = Buffer.from(CRAIG_DAVID_KEY, 'hex');
   const craigDavidPubkey = getPublicKey(craigDavidSecretKey);
   console.log(`🎵 Craig David key configured: ${craigDavidPubkey}`);
+}
+
+/**
+ * Roast Account Configuration
+ * 
+ * ROAST_PRIV contains the private key for the roasting account
+ * This key will be used to sign and publish roast events
+ */
+const ROAST_PRIV = process.env.ROAST_PRIV;
+
+if (!ROAST_PRIV) {
+  console.warn("⚠️  ROAST_PRIV private key not found in environment!");
+  console.warn("   Roast events will be published from server key instead.");
+  console.warn("   Add ROAST_PRIV=private_key_hex to .env file");
+} else {
+  // Validate the key format (should be 64 hex characters)
+  if (!/^[0-9a-fA-F]{64}$/.test(ROAST_PRIV.trim())) {
+    console.error("❌ Invalid ROAST_PRIV key format in .env file!");
+    console.error("   Expected: 64 hexadecimal characters");
+    console.error("   Got:", ROAST_PRIV.length, "characters");
+    process.exit(1);
+  }
+  
+  // Get Roast account's public key for display
+  const roastSecretKey = Buffer.from(ROAST_PRIV, 'hex');
+  const roastPubkey = getPublicKey(roastSecretKey);
+  console.log(`🔥 Roast account key configured: ${roastPubkey}`);
 }
 
 /**
@@ -260,9 +287,49 @@ async function main() {
               dayInput: {
                 type: "string",
                 description: "Description of what the person has been up to (may include image URLs). The AI will create a humorous summary and post it to Nostr."
+              },
+              pubkey: {
+                type: "string",
+                description: "The hex public key (64 chars) of the person whose day is being summarized. Used for the 'p' tag in the Nostr event."
               }
             },
-            required: ["dayInput"]
+            required: ["dayInput", "pubkey"]
+          }
+        },
+        {
+          name: "weekly_summary",
+          description: "Creates a Craig David style '7 Days' rap summary of the week's activities and publishes it to Nostr.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              weeklyInput: {
+                type: "string",
+                description: "Combined summary of the week's activities. The AI will create a Craig David style rap and post it to Nostr."
+              },
+              pubkey: {
+                type: "string",
+                description: "The hex public key (64 chars) of the person whose week is being summarized. Used for the 'p' tag in the Nostr event."
+              }
+            },
+            required: ["weeklyInput", "pubkey"]
+          }
+        },
+        {
+          name: "roastNpub",
+          description: "Creates a witty, observational roast of social media posts and publishes it to Nostr from a dedicated roast account.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              socialPosts: {
+                type: "string",
+                description: "Collection of social media posts to roast. The AI will create witty, observational comedy roasts and post them to Nostr."
+              },
+              pubkey: {
+                type: "string",
+                description: "The hex public key (64 chars) of the person being roasted. Used for the 'p' tag in the Nostr event."
+              }
+            },
+            required: ["socialPosts", "pubkey"]
           }
         }
       ]
@@ -335,19 +402,22 @@ async function main() {
         }
         
         const dayInput = args.dayInput as string;
+        const subjectPubkey = args.pubkey as string;
         
         // Check if API token is available
         if (!OPEN_ROUTER_KEY) {
           throw new Error("OPEN_ROUTER_KEY not configured. Please set it in .env file");
         }
         
-        console.log(`📝 Craig David summarising day: ${dayInput}`);
+        console.log(`📝 Craig David summarising day for pubkey: ${subjectPubkey}`);
+        console.log(`   Content preview: ${dayInput.substring(0, 100)}...`);
         
         try {
           // Create and publish summary
           const publishingKey = CRAIG_DAVID_KEY || SERVER_PRIVATE_KEY_HEX;
           const result = await createAndPublishSummary(
             dayInput,
+            subjectPubkey,
             OPEN_ROUTER_KEY,
             publishingKey,
             relayPool,
@@ -355,7 +425,7 @@ async function main() {
           );
           
           if (result.published) {
-            const responseText = `${result.summary}\n\n🎵 Summary published to Nostr!\nEvent ID: ${result.nostrEventId}`;
+            const responseText = `${result.summary}\n\n🎵 Summary published to Nostr!\nEvent ID: ${result.nostrEventId}\nSubject Pubkey: ${subjectPubkey}`;
             
             return {
               content: [
@@ -366,7 +436,7 @@ async function main() {
               ]
             };
           } else {
-            const responseText = `${result.summary}\n\n⚠️ Summary generated but failed to publish to Nostr: ${result.error}`;
+            const responseText = `${result.summary}\n\n⚠️ Summary generated but failed to publish to Nostr: ${result.error}\nSubject Pubkey: ${subjectPubkey}`;
             
             return {
               content: [
@@ -386,6 +456,142 @@ async function main() {
               {
                 type: "text",
                 text: `Sorry, I couldn't create a summary right now. Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+              }
+            ]
+          };
+        }
+      }
+      
+      case "weekly_summary": {
+        // Weekly summary tool implementation
+        // Creates Craig David style rap summaries and posts them to Nostr
+        if (!args || typeof args !== 'object') {
+          throw new Error("Invalid arguments for weekly_summary tool");
+        }
+        
+        const weeklyInput = args.weeklyInput as string;
+        const subjectPubkey = args.pubkey as string;
+        
+        // Check if API token is available
+        if (!OPEN_ROUTER_KEY) {
+          throw new Error("OPEN_ROUTER_KEY not configured. Please set it in .env file");
+        }
+        
+        console.log(`🎤 Craig David creating weekly rap for pubkey: ${subjectPubkey}`);
+        console.log(`   Content preview: ${weeklyInput.substring(0, 100)}...`);
+        
+        try {
+          // Create and publish weekly rap
+          const publishingKey = CRAIG_DAVID_KEY || SERVER_PRIVATE_KEY_HEX;
+          const result = await createAndPublishWeeklyRap(
+            weeklyInput,
+            subjectPubkey,
+            OPEN_ROUTER_KEY,
+            publishingKey,
+            relayPool,
+            POW_DIFFICULTY
+          );
+          
+          if (result.published) {
+            const responseText = `${result.summary}\n\n🎵 Weekly rap published to Nostr!\nEvent ID: ${result.nostrEventId}`;
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: responseText
+                }
+              ]
+            };
+          } else {
+            const responseText = `${result.summary}\n\n⚠️ Rap generated but failed to publish to Nostr: ${result.error}`;
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: responseText
+                }
+              ]
+            };
+          }
+        } catch (error) {
+          console.error("❌ Failed to create weekly rap:", error);
+          
+          // Return a friendly error message
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Sorry, I couldn't create a weekly rap right now. Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+              }
+            ]
+          };
+        }
+      }
+
+      case "roastNpub": {
+        // RoastNpub tool implementation
+        // Creates witty roasts of social media posts and publishes them to Nostr
+        if (!args || typeof args !== 'object') {
+          throw new Error("Invalid arguments for roastNpub tool");
+        }
+        
+        const socialPosts = args.socialPosts as string;
+        const subjectPubkey = args.pubkey as string;
+        
+        // Check if API token is available
+        if (!OPEN_ROUTER_KEY) {
+          throw new Error("OPEN_ROUTER_KEY not configured. Please set it in .env file");
+        }
+        
+        console.log(`🔥 Creating roast for pubkey: ${subjectPubkey}`);
+        console.log(`   Content preview: ${socialPosts.substring(0, 100)}...`);
+        
+        try {
+          // Create and publish roast
+          const roastKey = ROAST_PRIV || SERVER_PRIVATE_KEY_HEX;
+          const result = await createAndPublishRoast(
+            socialPosts,
+            subjectPubkey,
+            OPEN_ROUTER_KEY,
+            roastKey,
+            relayPool,
+            POW_DIFFICULTY
+          );
+          
+          if (result.published) {
+            const responseText = `${result.summary}\n\n🔥 Roast published to Nostr!\nEvent ID: ${result.nostrEventId}\nSubject Pubkey: ${subjectPubkey}`;
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: responseText
+                }
+              ]
+            };
+          } else {
+            const responseText = `${result.summary}\n\n⚠️ Roast generated but failed to publish to Nostr: ${result.error}\nSubject Pubkey: ${subjectPubkey}`;
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: responseText
+                }
+              ]
+            };
+          }
+        } catch (error) {
+          console.error("❌ Failed to create roast:", error);
+          
+          // Return a friendly error message
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Sorry, I couldn't create a roast right now. Error: ${error instanceof Error ? error.message : 'Unknown error'}`
               }
             ]
           };
@@ -456,7 +662,7 @@ async function main() {
       console.log(`   Craig David Key: Not configured (using server key for summaries)`);
     }
     console.log(`   Name: Craig David`);
-    console.log(`   Available Tools: funny_agent (multimodal), summarise (+ Nostr)`);
+    console.log(`   Available Tools: funny_agent (multimodal), summarise (+ Nostr), weekly_summary (+ Nostr), roastNpub (+ Nostr)`);
     if (OPEN_ROUTER_KEY) {
       console.log(`   OpenRouter API: Connected (Gemini 2.0 Flash + GPT via Groq)`);
     } else {
