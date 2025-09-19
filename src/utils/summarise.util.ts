@@ -710,17 +710,26 @@ async function publishRoastToNostr(
     console.log(`   Tags: ${JSON.stringify(tags)}`);
 
     // Sign the event first, then mine if needed
-    const signedEvent = await signer.signEvent(eventTemplate);
+    const signedEventInitial = await signer.signEvent(eventTemplate);
     
     // Mine event with PoW if difficulty > 0
     let finalEvent;
     if (powDifficulty > 0) {
       console.log(`⛏️  Mining event with difficulty ${powDifficulty}...`);
-      finalEvent = await mineEventPow(signedEvent, powDifficulty);
-      console.log(`✅ Event mined successfully`);
+      const minedEvent = await mineEventPow(signedEventInitial, powDifficulty);
+      // Re-sign the mined event since nonce tag changed the hash
+      const minedEventTemplate = {
+        kind: minedEvent.kind,
+        created_at: minedEvent.created_at,
+        tags: minedEvent.tags,
+        content: minedEvent.content,
+        pubkey: minedEvent.pubkey
+      };
+      finalEvent = await signer.signEvent(minedEventTemplate);
+      console.log(`✅ Event mined and re-signed`);
     } else {
       // Use the signed event as-is
-      finalEvent = signedEvent;
+      finalEvent = signedEventInitial;
     }
 
     // Log the final event details
@@ -733,7 +742,7 @@ async function publishRoastToNostr(
     
     console.log(`✅ Roast published successfully!`);
     console.log(`   Event ID: ${finalEvent.id}`);
-    console.log(`   Published to ${relayPool['relays']?.length || 'unknown'} relays`);
+    console.log(`   📡 Publishing to ${relayPool['normalizedRelayUrls']?.length || 'unknown'} relays...`);
 
     return {
       success: true,

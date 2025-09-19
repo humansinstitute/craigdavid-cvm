@@ -12,7 +12,7 @@ import type { NostrEvent } from 'nostr-tools';
  * Interface for raw Nostr event data
  */
 interface RawNostrEvent {
-  id?: string;
+  id: string;
   pubkey: string;
   created_at: number;
   kind: number;

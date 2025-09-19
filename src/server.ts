@@ -24,6 +24,7 @@ import { generateSecretKey, getPublicKey } from "nostr-tools";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { callOpenRouterAgent } from "./utils/callAgent.util.js";
 import { createAndPublishSummary, createAndPublishWeeklyRap, createAndPublishRoast } from "./utils/summarise.util.js";
+import { createMontage } from "./utils/montage.util.js";
 
 // ==================== Configuration Section ====================
 /**
@@ -197,6 +198,10 @@ async function main() {
   console.log("🚀 Starting MCP Nostr Server...");
   console.log("=" .repeat(50));
 
+  if (!process.env.NCTOOL_BASE_URL) {
+    console.log("📌 NCTOOL_BASE_URL not set — using default: http://localhost:3041");
+  }
+
   // -------------------- Step 1: Setup Cryptographic Signer --------------------
   /**
    * The PrivateKeySigner handles all cryptographic operations:
@@ -265,6 +270,18 @@ async function main() {
     return {
       tools: [
         {
+          name: "cashu_access",
+          description: "Redeem a Cashu token via NCTool using server pubkey; returns ACCESS_GRANTED/ACCESS_DENIED.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              encodedToken: { type: "string", description: "Cashu token (cashuA...)" },
+              minAmount: { type: "number", description: "Minimum sats required (default 256)" }
+            },
+            required: ["encodedToken"]
+          }
+        },
+        {
           name: "funny_agent",
           description: "Generates responses using OpenRouter API with multimodal support (text + images). Uses Gemini 2.0 Flash for images, GPT via Groq for text-only.",
           inputSchema: {
@@ -331,6 +348,28 @@ async function main() {
             },
             required: ["socialPosts", "pubkey"]
           }
+        },
+        {
+          name: "montage",
+          description: "Creates a 30-second video montage from files in a directory using the otherstuff.studio API.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              dir: {
+                type: "string",
+                description: "Directory path containing files to create montage from (e.g., ~/code/cdtest/cdtest)"
+              },
+              prompt: {
+                type: "string",
+                description: "Prompt describing how to create the montage (e.g., 'Please create a 30 second montage video as per your instructions from these files.')"
+              },
+              pubkey: {
+                type: "string",
+                description: "The hex public key (64 chars) of the user requesting the montage."
+              }
+            },
+            required: ["dir", "prompt", "pubkey"]
+          }
         }
       ]
     };
@@ -347,7 +386,85 @@ async function main() {
 
     // Route to the appropriate tool handler based on the tool name
     switch (name) {
-      case "funny_agent": {
+      case "cashu_access": {
+        const NCTOOL_BASE_URL = process.env.NCTOOL_BASE_URL || 'http://localhost:3041';
+        const DEFAULT_MIN = parseInt(process.env.MIN_AMOUNT_DEFAULT || '256', 10);
+
+        if (!args || typeof args !== 'object') {
+          throw new Error("Invalid arguments for cashu_access");
+        }
+        const encodedToken = (args as any).encodedToken as string;
+        const minAmountArg = (args as any).minAmount as number | undefined;
+        if (!encodedToken || typeof encodedToken !== 'string') {
+          throw new Error("encodedToken is required and must be a string");
+        }
+        const threshold = Number.isFinite(minAmountArg) ? Math.max(1, Math.floor(minAmountArg!)) : DEFAULT_MIN;
+
+        const start = Date.now();
+        const correlationId = (globalThis.crypto as any)?.randomUUID?.() || Math.random().toString(36).slice(2);
+
+        // Build URL using configured wallet npub (from .env) or fall back to server pubkey
+        const configuredNpub = (process.env.CASHU_WALL || '').trim();
+        let walletIdForPath: string;
+        if (configuredNpub && configuredNpub.startsWith('npub') && configuredNpub.length >= 10) {
+          walletIdForPath = configuredNpub;
+        } else {
+          const fallback = await signer.getPublicKey();
+          walletIdForPath = fallback;
+          console.warn('[cashu_access] CASHU_WALL not set or invalid; falling back to server pubkey for wallet path');
+        }
+        const base = NCTOOL_BASE_URL.replace(/\/$/, '');
+        const url = `${base}/api/wallet/${walletIdForPath}/receive`;
+
+        let amount = 0;
+        let mintUrl: string | undefined;
+        try {
+          const controller = (AbortSignal as any)?.timeout
+            ? undefined
+            : new AbortController();
+          const timeoutId = controller ? setTimeout(() => controller.abort(), 10_000) : undefined;
+
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Req-Id': String(correlationId),
+            },
+            body: JSON.stringify({ encodedToken }),
+            signal: (AbortSignal as any)?.timeout ? (AbortSignal as any).timeout(10_000) : controller!.signal,
+          } as any);
+
+          if (timeoutId) clearTimeout(timeoutId as any);
+
+          if (!res.ok) {
+            const errText = await safeText(res);
+            logDecision('ACCESS_DENIED', correlationId, start, 0, threshold);
+            return mcpText({ decision: 'ACCESS_DENIED', amount: 0, reason: `nctool_error: ${res.status} ${res.statusText} ${errText}` , mode: 'redeem' });
+          }
+
+          const data: any = await res.json();
+          amount = Number(data?.totalAmount || 0);
+          mintUrl = data?.mintUrl;
+        } catch (e: any) {
+          logDecision('ACCESS_DENIED', correlationId, start, 0, threshold);
+          return mcpText({ decision: 'ACCESS_DENIED', amount: 0, reason: `nctool_error: ${e?.message || 'network'}`, mode: 'redeem' });
+        }
+
+        if (amount >= threshold) {
+          logDecision('ACCESS_GRANTED', correlationId, start, amount, threshold);
+          return mcpText({ decision: 'ACCESS_GRANTED', amount, reason: 'redeemed ok', mintUrl, mode: 'redeem' });
+        }
+        logDecision('ACCESS_DENIED', correlationId, start, amount, threshold);
+        return mcpText({ decision: 'ACCESS_DENIED', amount, reason: `below min ${threshold}`, mintUrl, mode: 'redeem' });
+
+        async function safeText(res: any) { try { return await res.text(); } catch { return ''; } }
+        function mcpText(obj: any) { return { content: [{ type: 'text', text: JSON.stringify(obj) }] }; }
+        function logDecision(outcome: 'ACCESS_GRANTED'|'ACCESS_DENIED', corrId: string, started: number, amt: number, thr: number) {
+          const elapsedMs = Date.now() - started;
+          console.log('[cashu_access]', JSON.stringify({ correlationId: corrId, mode: 'redeem', amount: amt, threshold: thr, outcome, elapsedMs }));
+        }
+      }
+       case "funny_agent": {
         // Funny agent tool implementation
         // Calls the OpenRouter API to generate funny responses
         if (!args || typeof args !== 'object') {
@@ -592,6 +709,62 @@ async function main() {
               {
                 type: "text",
                 text: `Sorry, I couldn't create a roast right now. Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+              }
+            ]
+          };
+        }
+      }
+
+      case "montage": {
+        // Montage creation tool implementation
+        // Creates video montage using otherstuff.studio API
+        if (!args || typeof args !== 'object') {
+          throw new Error("Invalid arguments for montage tool");
+        }
+        
+        const dir = args.dir as string;
+        const prompt = args.prompt as string;
+        const pubkey = args.pubkey as string;
+        
+        // Validate required arguments
+        if (!dir || typeof dir !== 'string') {
+          throw new Error("dir is required and must be a string");
+        }
+        if (!prompt || typeof prompt !== 'string') {
+          throw new Error("prompt is required and must be a string");
+        }
+        if (!pubkey || typeof pubkey !== 'string') {
+          throw new Error("pubkey is required and must be a string");
+        }
+        
+        console.log(`🎬 Creating video montage for pubkey: ${pubkey}`);
+        console.log(`   Directory: ${dir}`);
+        console.log(`   Prompt preview: ${prompt.substring(0, 100)}...`);
+        
+        try {
+          // Create the montage
+          const result = await createMontage(dir, prompt, pubkey);
+          
+          console.log("✅ Montage creation triggered successfully");
+          
+          // Return success response
+          return {
+            content: [
+              {
+                type: "text",
+                text: result
+              }
+            ]
+          };
+        } catch (error) {
+          console.error("❌ Failed to create montage:", error);
+          
+          // Return a friendly error message
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Failed to create montage: ${error instanceof Error ? error.message : 'Unknown error'}`
               }
             ]
           };
