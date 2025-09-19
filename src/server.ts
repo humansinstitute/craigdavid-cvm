@@ -377,12 +377,43 @@ async function main() {
 
   // Handler for executing tools
   // This is called when a client wants to execute a specific tool
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // Extract the tool name and arguments from the request
     const { name, arguments: args } = request.params;
     
     console.log(`\n🔧 Tool called: ${name}`);
     console.log(`   Arguments: ${JSON.stringify(args)}`);
+
+    // Progress utilities (MCP progress notifications)
+    const progressToken = (extra as any)?._meta?.progressToken;
+    const canProgress = Boolean(progressToken) && typeof (extra as any)?.sendNotification === 'function';
+    const sendProgress = async (progress: number, total?: number, message?: string) => {
+      if (!canProgress) return;
+      try {
+        await (extra as any).sendNotification({
+          method: "notifications/progress",
+          params: {
+            progress,
+            ...(typeof total === 'number' ? { total } : {}),
+            ...(message ? { message } : {}),
+            progressToken,
+          }
+        });
+      } catch (err) {
+        // Swallow progress errors to avoid breaking the request
+        console.warn('[progress] failed to send progress notification:', (err as any)?.message || err);
+      }
+    };
+    const startHeartbeat = (label: string, intervalMs = Number(process.env.CVM_PROGRESS_HEARTBEAT_MS || 10000)) => {
+      if (!canProgress || intervalMs <= 0) return () => {};
+      const id = setInterval(() => {
+        // Heartbeat message to keep clients aware and reset timeouts
+        sendProgress(0, undefined, `${label} – still working...`);
+      }, intervalMs);
+      // Stop on abort
+      (extra as any)?.signal?.addEventListener?.('abort', () => clearInterval(id));
+      return () => clearInterval(id);
+    };
 
     // Route to the appropriate tool handler based on the tool name
     switch (name) {
@@ -530,6 +561,9 @@ async function main() {
         console.log(`   Content preview: ${dayInput.substring(0, 100)}...`);
         
         try {
+          await sendProgress(0, 3, 'Starting day summary');
+          await sendProgress(1, 3, 'Generating AI summary');
+          const stopBeat = startHeartbeat('summarise');
           // Create and publish summary
           const publishingKey = CRAIG_DAVID_KEY || SERVER_PRIVATE_KEY_HEX;
           const result = await createAndPublishSummary(
@@ -540,9 +574,12 @@ async function main() {
             relayPool,
             POW_DIFFICULTY
           );
+          stopBeat();
+          await sendProgress(2, 3, result.published ? 'Publishing to Nostr' : 'Generated; publishing may have failed');
           
           if (result.published) {
             const responseText = `${result.summary}\n\n🎵 Summary published to Nostr!\nEvent ID: ${result.nostrEventId}\nSubject Pubkey: ${subjectPubkey}`;
+            await sendProgress(3, 3, 'Summary complete');
             
             return {
               content: [
@@ -554,6 +591,7 @@ async function main() {
             };
           } else {
             const responseText = `${result.summary}\n\n⚠️ Summary generated but failed to publish to Nostr: ${result.error}\nSubject Pubkey: ${subjectPubkey}`;
+            await sendProgress(3, 3, 'Summary generated; publish failed');
             
             return {
               content: [
@@ -566,6 +604,7 @@ async function main() {
           }
         } catch (error) {
           console.error("❌ Failed to create summary:", error);
+          await sendProgress(3, 3, `Summary failed: ${(error as any)?.message || 'unknown error'}`);
           
           // Return a friendly error message
           return {
@@ -598,6 +637,9 @@ async function main() {
         console.log(`   Content preview: ${weeklyInput.substring(0, 100)}...`);
         
         try {
+          await sendProgress(0, 4, 'Starting weekly summary');
+          await sendProgress(1, 4, 'Generating rap with AI');
+          const stopBeat = startHeartbeat('weekly_summary');
           // Create and publish weekly rap
           const publishingKey = CRAIG_DAVID_KEY || SERVER_PRIVATE_KEY_HEX;
           const result = await createAndPublishWeeklyRap(
@@ -608,9 +650,12 @@ async function main() {
             relayPool,
             POW_DIFFICULTY
           );
+          stopBeat();
+          await sendProgress(2, 4, result.published ? 'Publishing weekly rap to Nostr' : 'Generated; publishing may have failed');
           
           if (result.published) {
             const responseText = `${result.summary}\n\n🎵 Weekly rap published to Nostr!\nEvent ID: ${result.nostrEventId}`;
+            await sendProgress(4, 4, 'Weekly summary complete');
             
             return {
               content: [
@@ -622,6 +667,7 @@ async function main() {
             };
           } else {
             const responseText = `${result.summary}\n\n⚠️ Rap generated but failed to publish to Nostr: ${result.error}`;
+            await sendProgress(4, 4, 'Weekly summary generated; publish failed');
             
             return {
               content: [
@@ -634,6 +680,7 @@ async function main() {
           }
         } catch (error) {
           console.error("❌ Failed to create weekly rap:", error);
+          await sendProgress(4, 4, `Weekly summary failed: ${(error as any)?.message || 'unknown error'}`);
           
           // Return a friendly error message
           return {
